@@ -1,0 +1,13 @@
+{
+  "name": "remote-pc-server",
+  "version": "1.0.0",
+  "description": "Relay server that connects the PC agent and the web viewer over the internet",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
+  }
+}

@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Điều khiển PC từ xa</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="login-screen" class="screen">
+    <div class="card">
+      <h1>Điều khiển PC từ xa</h1>
+      <p class="hint">Nhập mã hiển thị trên PC của bạn để kết nối.</p>
+      <input id="code-input" type="text" maxlength="6" placeholder="MÃ 6 KÝ TỰ" autocapitalize="characters" />
+      <input id="password-input" type="password" placeholder="Mật khẩu (nếu có)" />
+      <button id="connect-btn">Kết nối</button>
+      <p id="error-msg" class="error"></p>
+    </div>
+  </div>
+
+  <div id="remote-screen" class="screen hidden">
+    <div id="toolbar">
+      <span id="status-text">Đang kết nối...</span>
+      <button id="disconnect-btn">Ngắt kết nối</button>
+    </div>
+    <div id="canvas-wrap">
+      <canvas id="screen-canvas"></canvas>
+      <input id="hidden-keyboard-input" type="text" autocomplete="off" />
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
