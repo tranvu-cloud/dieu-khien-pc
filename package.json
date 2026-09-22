@@ -1,15 +1,13 @@
 {
-  "name": "remote-pc-agent",
+  "name": "remote-pc-server",
   "version": "1.0.0",
-  "description": "Runs on your Windows PC: streams the screen and executes remote mouse/keyboard commands",
+  "description": "Relay server that connects the PC agent and the web viewer over the internet",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "socket.io-client": "^4.7.5",
-    "screenshot-desktop": "^1.15.0",
-    "@nut-tree-fork/nut-js": "^3.1.2",
-    "dotenv": "^16.4.5"
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
   }
 }

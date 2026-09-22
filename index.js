@@ -1,156 +1,116 @@
-require("dotenv").config();
-const { io } = require("socket.io-client");
-const screenshot = require("screenshot-desktop");
-const { mouse, keyboard, screen, Point, Button, Key } = require("@nut-tree-fork/nut-js");
+// Relay server: sits between the PC agent and the web viewer.
+// It never sees your screen content persist anywhere - it just forwards
+// frames from the agent to the viewer, and input events from the viewer
+// to the agent, in real time.
 
-const SERVER_URL = process.env.SERVER_URL;
-const PASSWORD = process.env.PASSWORD || null;
-const FPS = Number(process.env.FPS || 6);
-const QUALITY = Number(process.env.QUALITY || 60);
+const path = require("path");
+const express = require("express");
+const http = require("http");
+const { Server } = require("socket.io");
 
-if (!SERVER_URL) {
-  console.error("Thiếu SERVER_URL. Hãy tạo file .env (copy từ .env.example) và điền URL server.");
-  process.exit(1);
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+  maxHttpBufferSize: 5e6, // allow ~5MB per frame message
+});
+
+// Serve the web viewer (the /web folder, now inside server/) as static files at "/"
+app.use(express.static(path.join(__dirname, "web")));
+
+// roomCode -> { hostSocketId, viewerSocketIds: Set, password }
+const rooms = new Map();
+
+function randomCode(len = 6) {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no ambiguous chars
+  let out = "";
+  for (let i = 0; i < len; i++) out += chars[Math.floor(Math.random() * chars.length)];
+  return out;
 }
 
-// Make input execution snappy and not add extra delay between key presses.
-keyboard.config.autoDelayMs = 0;
-mouse.config.autoDelayMs = 0;
-mouse.config.mouseSpeed = 5000;
+io.on("connection", (socket) => {
+  // --- Agent (host) registers a new session ---
+  socket.on("host-register", (payload, ack) => {
+    let code = randomCode();
+    while (rooms.has(code)) code = randomCode();
 
-// --- Map physical browser keys (event.code) to nut-js Key enum ---
-const CODE_MAP = {
-  Enter: Key.Enter, Escape: Key.Escape, Backspace: Key.Backspace, Tab: Key.Tab, Space: Key.Space,
-  ArrowUp: Key.Up, ArrowDown: Key.Down, ArrowLeft: Key.Left, ArrowRight: Key.Right,
-  ControlLeft: Key.LeftControl, ControlRight: Key.RightControl,
-  ShiftLeft: Key.LeftShift, ShiftRight: Key.RightShift,
-  AltLeft: Key.LeftAlt, AltRight: Key.RightAlt,
-  MetaLeft: Key.LeftSuper, MetaRight: Key.RightSuper,
-  Comma: Key.Comma, Period: Key.Period, Slash: Key.Slash, Semicolon: Key.Semicolon,
-  Quote: Key.Quote, BracketLeft: Key.LeftBracket, BracketRight: Key.RightBracket,
-  Backslash: Key.Backslash, Minus: Key.Minus, Equal: Key.Equal,
-  Delete: Key.Delete, Home: Key.Home, End: Key.End, PageUp: Key.PageUp, PageDown: Key.PageDown,
-};
-for (let i = 0; i < 26; i++) {
-  const letter = String.fromCharCode(65 + i); // A-Z
-  CODE_MAP["Key" + letter] = Key[letter];
-}
-for (let i = 0; i <= 9; i++) {
-  CODE_MAP["Digit" + i] = Key["Num" + i];
-}
-for (let i = 1; i <= 12; i++) {
-  CODE_MAP["F" + i] = Key["F" + i];
-}
+    rooms.set(code, {
+      hostSocketId: socket.id,
+      viewerSocketIds: new Set(),
+      password: (payload && payload.password) || null,
+      screenWidth: payload && payload.screenWidth,
+      screenHeight: payload && payload.screenHeight,
+    });
 
-const MODIFIER_CODES = new Set([
-  "ControlLeft", "ControlRight", "ShiftLeft", "ShiftRight",
-  "AltLeft", "AltRight", "MetaLeft", "MetaRight",
-]);
+    socket.data.role = "host";
+    socket.data.roomCode = code;
+    socket.join(code);
 
-let remoteWidth = 1920;
-let remoteHeight = 1080;
-
-async function main() {
-  const size = await screen.width().then((w) => screen.height().then((h) => ({ w, h })));
-  remoteWidth = size.w;
-  remoteHeight = size.h;
-
-  console.log("Đang kết nối tới server:", SERVER_URL);
-  const socket = io(SERVER_URL, { transports: ["websocket", "polling"] });
-
-  socket.on("connect", () => {
-    socket.emit(
-      "host-register",
-      { password: PASSWORD, screenWidth: remoteWidth, screenHeight: remoteHeight },
-      (res) => {
-        if (!res || !res.ok) {
-          console.error("Đăng ký với server thất bại.");
-          return;
-        }
-        console.log("\n=================================");
-        console.log("  MÃ KẾT NỐI CỦA BẠN:", res.code);
-        console.log("  Nhập mã này trên trang web để điều khiển PC này.");
-        console.log("=================================\n");
-      }
-    );
+    if (ack) ack({ ok: true, code });
+    console.log(`[host] registered room ${code}`);
   });
 
-  socket.on("connect_error", (err) => {
-    console.error("Không kết nối được tới server:", err.message);
-  });
+  // --- Viewer (browser) joins an existing session ---
+  socket.on("viewer-join", (payload, ack) => {
+    const code = (payload && payload.code || "").toUpperCase().trim();
+    const room = rooms.get(code);
 
-  socket.on("viewer-connected", () => {
-    console.log("Một trình duyệt đã kết nối và có thể điều khiển PC này.");
-  });
-
-  socket.on("viewer-disconnected", () => {
-    console.log("Trình duyệt đã ngắt kết nối.");
-  });
-
-  socket.on("input", handleInput);
-
-  startFrameLoop(socket);
-}
-
-function startFrameLoop(socket) {
-  const intervalMs = Math.max(50, Math.round(1000 / FPS));
-  setInterval(async () => {
-    try {
-      const img = await screenshot({ format: "jpg" });
-      socket.emit("frame", img.toString("base64"));
-    } catch (err) {
-      // Screenshot can occasionally fail (e.g. display sleeping) - just skip this frame.
+    if (!room) {
+      if (ack) ack({ ok: false, error: "Mã không tồn tại hoặc PC chưa bật agent." });
+      return;
     }
-  }, intervalMs);
-}
-
-async function handleInput(evt) {
-  try {
-    switch (evt.type) {
-      case "move": {
-        const x = Math.round(evt.x * remoteWidth);
-        const y = Math.round(evt.y * remoteHeight);
-        await mouse.setPosition(new Point(x, y));
-        break;
-      }
-      case "mousedown": {
-        await mouse.pressButton(evt.button === 2 ? Button.RIGHT : Button.LEFT);
-        break;
-      }
-      case "mouseup": {
-        await mouse.releaseButton(evt.button === 2 ? Button.RIGHT : Button.LEFT);
-        break;
-      }
-      case "scroll": {
-        if (evt.deltaY > 0) await mouse.scrollDown(Math.min(20, Math.abs(Math.round(evt.deltaY / 20))));
-        else await mouse.scrollUp(Math.min(20, Math.abs(Math.round(evt.deltaY / 20))));
-        break;
-      }
-      case "keydown": {
-        if (MODIFIER_CODES.has(evt.code)) return; // modifiers alone do nothing visible
-        const mapped = CODE_MAP[evt.code];
-        if (!mapped) return;
-
-        const combo = [];
-        if (evt.ctrlKey) combo.push(Key.LeftControl);
-        if (evt.altKey) combo.push(Key.LeftAlt);
-        if (evt.shiftKey) combo.push(Key.LeftShift);
-        if (evt.metaKey) combo.push(Key.LeftSuper);
-        combo.push(mapped);
-
-        await keyboard.pressKey(...combo);
-        await keyboard.releaseKey(...combo);
-        break;
-      }
-      default:
-        break;
+    if (room.password && room.password !== (payload && payload.password)) {
+      if (ack) ack({ ok: false, error: "Sai mật khẩu." });
+      return;
     }
-  } catch (err) {
-    console.error("Lỗi khi xử lý input:", err.message);
-  }
-}
 
-main().catch((err) => {
-  console.error("Agent gặp lỗi khi khởi động:", err);
-  process.exit(1);
+    socket.data.role = "viewer";
+    socket.data.roomCode = code;
+    socket.join(code);
+    room.viewerSocketIds.add(socket.id);
+
+    if (ack) {
+      ack({ ok: true, screenWidth: room.screenWidth, screenHeight: room.screenHeight });
+    }
+    io.to(room.hostSocketId).emit("viewer-connected", { viewerId: socket.id });
+    console.log(`[viewer] joined room ${code}`);
+  });
+
+  // --- Agent streams a screen frame ---
+  socket.on("frame", (data) => {
+    const code = socket.data.roomCode;
+    if (!code || socket.data.role !== "host") return;
+    // Forward straight to all viewers in this room, don't buffer/store it.
+    socket.to(code).emit("frame", data);
+  });
+
+  // --- Viewer sends an input event (mouse/keyboard) ---
+  socket.on("input", (data) => {
+    const code = socket.data.roomCode;
+    if (!code || socket.data.role !== "viewer") return;
+    const room = rooms.get(code);
+    if (!room) return;
+    io.to(room.hostSocketId).emit("input", data);
+  });
+
+  socket.on("disconnect", () => {
+    const code = socket.data.roomCode;
+    if (!code) return;
+    const room = rooms.get(code);
+    if (!room) return;
+
+    if (socket.data.role === "host") {
+      // Host left: tell viewers and tear down the room.
+      io.to(code).emit("host-disconnected");
+      rooms.delete(code);
+      console.log(`[host] room ${code} closed`);
+    } else {
+      room.viewerSocketIds.delete(socket.id);
+      io.to(room.hostSocketId).emit("viewer-disconnected", { viewerId: socket.id });
+    }
+  });
+});
+
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+  console.log(`Relay server listening on port ${PORT}`);
 });
