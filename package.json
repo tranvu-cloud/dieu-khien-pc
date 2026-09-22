@@ -1,0 +1,15 @@
+{
+  "name": "remote-pc-agent",
+  "version": "1.0.0",
+  "description": "Runs on your Windows PC: streams the screen and executes remote mouse/keyboard commands",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "socket.io-client": "^4.7.5",
+    "screenshot-desktop": "^1.15.0",
+    "@nut-tree-fork/nut-js": "^3.1.2",
+    "dotenv": "^16.4.5"
+  }
+}
